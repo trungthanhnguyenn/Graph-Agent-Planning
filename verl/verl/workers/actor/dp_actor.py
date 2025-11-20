@@ -38,10 +38,13 @@ from verl.utils.torch_functional import logprobs_from_logits
 from verl.utils.ulysses import gather_outpus_and_unpad, ulysses_pad, ulysses_pad_and_slice_inputs
 from verl.workers.actor import BasePPOActor
 
-if is_cuda_available:
-    from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
-elif is_npu_available:
-    from transformers.integrations.npu_flash_attention import index_first_axis, pad_input, rearrange, unpad_input
+try:
+    if is_cuda_available:
+        from transformers.integrations.flash_attention import index_first_axis, pad_input, rearrange, unpad_input
+    elif is_npu_available:
+        from transformers.integrations.npu_flash_attention import index_first_axis, pad_input, rearrange, unpad_input
+except ImportError:
+    index_first_axis = pad_input = rearrange = unpad_input = None
 
 
 __all__ = ["DataParallelPPOActor"]
