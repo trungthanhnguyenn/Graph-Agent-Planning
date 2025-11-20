@@ -40,8 +40,13 @@ from tensordict import TensorDict
 from vllm import LLM, SamplingParams
 from vllm.distributed import parallel_state as vllm_ps
 from vllm.lora.request import LoRARequest
-from vllm.worker.worker_base import WorkerWrapperBase
-
+try:
+    # Cố gắng import theo kiểu cũ (vLLM standard)
+    from vllm.worker.worker_base import WorkerWrapperBase
+except ImportError:
+    # Nếu lỗi, import theo kiểu mới (vLLM V1 / Unsloth Blackwell)
+    print("[WARNING] Đang sử dụng vLLM V1 architecture cho Blackwell...")
+    from vllm.v1.worker.worker_base import WorkerWrapperBase
 from verl import DataProto
 from verl.third_party.vllm import vllm_version
 from verl.utils.debug import GPUMemoryLogger
@@ -315,6 +320,14 @@ class vLLMRollout(BaseRollout):
                 # NOTE(linjunrong): for multi-turn https://github.com/volcengine/verl/pull/1037
                 if "tools_kwargs" in non_tensor_batch.keys():
                     non_tensor_batch["tools_kwargs"] = _repeat_interleave(non_tensor_batch["tools_kwargs"], self.sampling_params.n)
+                
+                if "raw_prompt" in non_tensor_batch:
+                    raw_prompt = non_tensor_batch["raw_prompt"]
+                    expanded_prompts = []
+                    for p in raw_prompt:
+                        # Nhân bản mỗi prompt n lần (ví dụ: [A, B] -> [A...A, B...B])
+                        expanded_prompts.extend([p] * self.sampling_params.n)
+                    non_tensor_batch["raw_prompt"] = expanded_prompts
 
             seq = torch.cat([idx, response], dim=-1)
 
