@@ -1,5 +1,12 @@
 set -x
 
+
+export CUDA_VISIBLE_DEVICES=0,1
+export NCCL_SHM_DISABLE=1
+export NCCL_P2P_DISABLE=1
+export RAY_ADDRESS="local"
+export PYTHONPATH=$PYTHONPATH:$(pwd)
+
 ulimit -n 65535
 # =====================================================================================================================
 #                                      Param
@@ -10,7 +17,7 @@ PPO_MINI_BS=64
 GEN_BS=128
 EPOCHS=2
 STEPS=60
-N=8
+N=1
 PPO_MICRO_BSZ_PER_GPU=2
 LOG_PROB_MICRO_BSZ_PER_GPU=8
 CLIP_RATIO_LOW=0.2
@@ -22,7 +29,7 @@ actor_ppo_max_token_len=$((max_prompt_length + max_response_length))
 infer_ppo_max_token_len=$((max_prompt_length + max_response_length))
 # performance related param
 SP_SIZE=2
-GEN_TP=2
+GEN_TP=1
 use_dynamic_bsz=True
 offload=True
 # =====================================================================================================================
@@ -35,10 +42,10 @@ export NNODES=1 # "your GPU group number"
 export PROJECT_NAME="Graph-Agent-Planning"
 SAVE_MODEL_FOLDER="${CURRENT_DIR}/experiments"  # your save model folder
 export EXPERIMENT_NAME="DAPO-GAP3B-MHQA-Agent"
-export BASE_MODEL="home/jiaqi/Graph-Agent-Planning/Agent/models/GAP-MHQA-3B-sft"   # your train model path
-export VLLM_ATTENTION_BACKEND=XFORMERS
-TRAIN_DATASETS="${CURRENT_DIR}/Agent/data/mhqa_agent/GAP-MHQA-RL-Dataset/GAP-RL-16w.parquet"   # your train dataset
-VAL_DATASETS="home/jiaqi/Graph-Agent-Planning/Agent/data/mhqa_agent/test_benchmarks/nq_full.parquet"
+export BASE_MODEL="${CURRENT_DIR}/experiments/merged_model"  # your train model path
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+TRAIN_DATASETS="${CURRENT_DIR}/GAP-MHQA-RL-Dataset/GAP-RL-16w.parquet"   # your train dataset
+VAL_DATASETS="${CURRENT_DIR}/Agent/data/mhqa_agent/test_benchmarks/nq_full.parquet"
 # =====================================================================================================================
 #                                      Tool
 # =====================================================================================================================
@@ -50,6 +57,8 @@ SEARCH_CONFIG="${CURRENT_DIR}/verl/verl/tools/config/search_tool_config/training
 AFM_CONFIG="${CURRENT_DIR}/verl/verl/tools/config/afm_tool_config/afm_tool_config.yaml" 
 # wiki tools
 WIKI_SEARCH="${CURRENT_DIR}/verl/verl/tools/config/search_tool_config/wiki_rag_config.yaml"
+
+mkdir -p logs
 # =====================================================================================================================
 #                                      Train
 # =====================================================================================================================
@@ -68,7 +77,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     data.filter_overlong_prompts=False \
     actor_rollout_ref.model.path=$BASE_MODEL \
     actor_rollout_ref.model.enable_gradient_checkpointing=true \
-    actor_rollout_ref.model.use_remove_padding=true \
+    actor_rollout_ref.model.use_remove_padding=false \
     actor_rollout_ref.hybrid_engine=true \
     actor_rollout_ref.actor.optim.lr="${ACTOR_LR}" \
     actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.285 \
@@ -85,7 +94,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.max_model_len=${actor_ppo_max_token_len} \
     actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$LOG_PROB_MICRO_BSZ_PER_GPU \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$GEN_TP \
-    actor_rollout_ref.rollout.name=sglang_async \
+    actor_rollout_ref.rollout.name=vllm \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.5 \
     actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=${use_dynamic_bsz} \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${infer_ppo_max_token_len} \
@@ -109,7 +118,7 @@ PYTHONUNBUFFERED=1 python3 -m verl.trainer.main_ppo \
     trainer.val_before_train=true \
     trainer.default_hdfs_dir=null \
     trainer.n_gpus_per_node=2 \
-    trainer.nnodes=$NNODES \
+    trainer.nnodes=1 \
     trainer.save_freq=20 \
     trainer.test_freq=20 \
     trainer.project_name=$PROJECT_NAME \
