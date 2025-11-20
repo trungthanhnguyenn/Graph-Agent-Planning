@@ -34,9 +34,11 @@ import sglang.srt.entrypoints.engine
 import torch
 import torch.distributed as dist
 from omegaconf import DictConfig
-from sglang.srt.managers.tokenizer_manager import (
-    ReleaseMemoryOccupationReqInput, ResumeMemoryOccupationReqInput,
-    UpdateWeightsFromTensorReqInput)
+from sglang.srt.managers.io_struct import (
+    ReleaseMemoryOccupationReqInput,
+    ResumeMemoryOccupationReqInput,
+    UpdateWeightsFromTensorReqInput,
+)
 from sglang.srt.openai_api.protocol import Tool
 from sglang.srt.sampling.sampling_params import SamplingParams
 from sglang.srt.server_args import ServerArgs
