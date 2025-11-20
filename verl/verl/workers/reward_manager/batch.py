@@ -84,7 +84,15 @@ class BatchRewardManager:
         attention_mask = data.batch["attention_mask"]
         valid_response_lengths = attention_mask[:, prompt_len:].sum(dim=-1)
         data_sources = data.non_tensor_batch[self.reward_fn_key]
-        complete_reasons = data.non_tensor_batch['complete_reason']
+        # complete_reasons = data.non_tensor_batch['complete_reason']
+
+        if 'complete_reason' in data.non_tensor_batch:
+            complete_reasons = data.non_tensor_batch['complete_reason']
+        else:
+            # Nếu không tìm thấy, giả định là 'eos' (kết thúc bình thường) cho tất cả batch
+            batch_size = len(data)
+            print(f"[WARNING] 'complete_reason' not found via vLLM V1. Defaulting to 'eos' for {batch_size} samples.")
+            complete_reasons = ['eos'] * batch_size
 
         scores = self.verify(data)
         rewards = []
