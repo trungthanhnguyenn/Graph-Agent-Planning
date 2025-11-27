@@ -1,150 +1,153 @@
 import pandas as pd
 import os
+import numpy as np 
 from typing import List, Dict, Any, Tuple
 from datasets import Dataset
-
 
 class GAPDataError(Exception):
     """Custom exception for data loading errors"""
     pass
 
-
-GAP_SYSTEM_PROMPT = """You are an intelligent AI assistant that can search for information and provide accurate answers. You have access to a wiki_search function that can retrieve relevant information.
-
-CRITICAL INSTRUCTION: If you need to search for multiple independent entities, you MUST combine them into a single tool call separated by the '|' character. For example:
-- Good: <wiki_search>Entity1 | Entity2 | Entity3</wiki_search>
-- Bad: <wiki_search>Entity1</wiki_search> then <wiki_search>Entity2</wiki_search>
-
-This parallel search approach is more efficient and is the preferred method.
-
-Available functions:
-- wiki_search: Search for information. Use | to separate multiple queries for parallel execution.
-- answer: Provide your final answer in <answer>...</answer> tags.
-
-Always end your response with <answer>your final answer</answer>."""
-
-
 class GAPDataLoader:
     def __init__(self, dataset_path: str, project_root: str):
-        """
-        Initialize GAP Data Loader
-        
-        Args:
-            dataset_path: Path to parquet file relative to project_root
-            project_root: Absolute path to Graph-Agent-Planning directory
-        """
         self.project_root = project_root
         
-        if os.path.isabs(dataset_path):
+        if os.path.exists(dataset_path):
+            self.dataset_path = dataset_path
+        elif os.path.exists(os.path.join(project_root, dataset_path)):
+            self.dataset_path = os.path.join(project_root, dataset_path)
+        elif os.path.isabs(dataset_path) and os.path.exists(dataset_path):
             self.dataset_path = dataset_path
         else:
-            self.dataset_path = os.path.join(project_root, dataset_path)
-        
-        if not os.path.exists(self.project_root):
-            raise GAPDataError(f"Project root not found: {self.project_root}")
-        
-        if not os.path.exists(self.dataset_path):
-            raise GAPDataError(f"Dataset file not found: {self.dataset_path}")
+            cwd = os.getcwd()
+            raise GAPDataError(
+                f"Dataset file not found.\n"
+                f" - Checked relative: {dataset_path}\n"
+                f" - Checked joined: {os.path.join(project_root, dataset_path)}\n"
+                f" - Current Dir: {cwd}"
+            )
         
         self._load_dataset()
     
     def _load_dataset(self) -> None:
-        """Load and validate parquet dataset"""
         try:
+            print(f"Reading parquet from: {self.dataset_path}")
             self.df = pd.read_parquet(self.dataset_path)
         except Exception as e:
             raise GAPDataError(f"Failed to load parquet file {self.dataset_path}: {e}") from e
         
-        required_columns = ['question', 'answer', 'prompt', 'reward_model']
-        missing_columns = [col for col in required_columns if col not in self.df.columns]
-        if missing_columns:
-            raise GAPDataError(f"Missing required columns: {missing_columns}. Found: {list(self.df.columns)}")
-        
         if len(self.df) == 0:
             raise GAPDataError(f"Dataset is empty: {self.dataset_path}")
         
-        print(f"Loaded GAP dataset: {len(self.df)} samples from {self.dataset_path}")
+        print(f"Loaded GAP dataset: {len(self.df)} samples")
     
-    def _extract_ground_truth(self, reward_model_data: Dict[str, Any]) -> List[str]:
-        """Extract ground truth from reward_model column"""
+    def _extract_ground_truth(self, row: pd.Series) -> List[str]:
+        """
+        Extract answer from dataset
+        """
         try:
-            ground_truth = reward_model_data.get('ground_truth', {})
-            target = ground_truth.get('target', [])
+            if 'answer' in row:
+                val = row['answer']
+                if val is None: return []
+                if isinstance(val, str): return [val]
+                # add support for list/array
+                if isinstance(val, (list, tuple, np.ndarray)): 
+                    return [str(v) for v in val]
             
-            if isinstance(target, str):
-                return [target]
-            elif isinstance(target, (list, tuple)):
-                return [str(item) for item in target]
-            else:
-                raise GAPDataError(f"Invalid ground truth format: {type(target)}")
-                
+            if 'reward_model' in row:
+                rm = row['reward_model']
+                if isinstance(rm, dict):
+                    ground_truth = rm.get('ground_truth', {})
+                    target = ground_truth.get('target', [])
+                    if isinstance(target, str): return [target]
+                    if isinstance(target, (list, tuple, np.ndarray)):
+                        return [str(item) for item in target]
+            
+            return []
         except Exception as e:
-            raise GAPDataError(f"Failed to extract ground truth: {e}") from e
+            return [] 
     
-    def _format_conversation(self, question: str) -> str:
-        """Format question into conversation with system prompt"""
-        return f"System: {GAP_SYSTEM_PROMPT}\n\nUser: {question}\n\nAssistant: "
-    
-    def prepare_grpo_dataset(self, max_samples: int = None) -> Dataset:
+    def _extract_prompt_content(self, raw_prompt: Any) -> str:
         """
-        Prepare dataset for GRPO training with proper format
-        
-        Args:
-            max_samples: Limit number of samples for testing (None = use all)
+        Extract 'content' from the 'prompt' field
+        """
+        try:
+            if isinstance(raw_prompt, (list, np.ndarray, tuple)) and len(raw_prompt) > 0:
+                first_item = raw_prompt[0]
+                if isinstance(first_item, dict) and 'content' in first_item:
+                    return first_item['content']
             
-        Returns:
-            HuggingFace Dataset with prompt, answer columns
-        """
+            if isinstance(raw_prompt, str):
+                return raw_prompt
+                
+            return ""
+        except Exception:
+            return ""
+
+    def prepare_grpo_dataset(self, max_samples: int = None) -> Dataset:
+        """Prepare dataset for GRPO training"""
         df_subset = self.df.head(max_samples) if max_samples else self.df
         
         processed_data = {
             'prompt': [],
-            'answer': []  # Ground truth for reward calculation
+            'answer': [] 
         }
         
+        print("⚙️ Processing dataset rows...")
+        error_count = 0
+        first_error = None
+
         for idx, row in df_subset.iterrows():
             try:
-                formatted_prompt = self._format_conversation(row['question'])
+                user_content = self._extract_prompt_content(row['prompt'])
+                if not user_content:
+                    if error_count == 0:
+                        print(f"DEBUG: Failed to extract prompt at row {idx}. Raw type: {type(row['prompt'])}")
+                        print(f"DEBUG: Raw content: {str(row['prompt'])[:100]}...")
+                    error_count += 1
+                    continue
+
+                full_prompt = (
+                    f"<|im_start|>user\n{user_content}<|im_end|>\n"
+                    f"<|im_start|>assistant\n"
+                )
                 
-                ground_truth = self._extract_ground_truth(row['reward_model'])
+                ground_truth = self._extract_ground_truth(row)
+                if not ground_truth:
+                    if error_count == 0:
+                        print(f"DEBUG: No ground truth found at row {idx}")
+                    error_count += 1
+                    continue 
                 
-                processed_data['prompt'].append(formatted_prompt)
+                processed_data['prompt'].append(full_prompt)
                 processed_data['answer'].append(ground_truth)
                 
             except Exception as e:
-                print(f"Skipping corrupted row {idx}: {e}")
+                error_count += 1
+                if first_error is None:
+                    first_error = str(e)
                 continue
         
         if len(processed_data['prompt']) == 0:
-            raise GAPDataError("No valid samples after processing")
+            msg = f"No valid samples after processing! Failed rows: {error_count}."
+            if first_error:
+                msg += f" First error: {first_error}"
+            raise GAPDataError(msg)
 
-        print(f"Processed {len(processed_data['prompt'])} valid samples for GRPO training")
-
+        print(f"Processed {len(processed_data['prompt'])} valid samples for GRPO")
         return Dataset.from_dict(processed_data)
 
-
 def load_gap_dataset(
-    project_root: str = "Graph-Agent-Planning",
+    project_root: str = ".",
     dataset_path: str = "GAP-MHQA-RL-Dataset/GAP-RL-16w.parquet",
     max_samples: int = None
 ) -> Dataset:
-    """
-    Convenience function to load GAP dataset for GRPO training
-    
-    Args:
-        project_root: Path to Graph-Agent-Planning directory  
-        dataset_path: Relative path to parquet file
-        max_samples: Limit samples for testing
-        
-    Returns:
-        HuggingFace Dataset ready for GRPO training
-    """
+    if not project_root: project_root = "."
     loader = GAPDataLoader(dataset_path, project_root)
     return loader.prepare_grpo_dataset(max_samples)
-
 
 LEGACY_PATHS = {
     'BASE_MODEL': 'experiments/merged_model',
     'TRAIN_DATASETS': 'GAP-MHQA-RL-Dataset/GAP-RL-16w.parquet',
-    'PROJECT_ROOT': 'Graph-Agent-Planning'
+    'PROJECT_ROOT': '.'
 }
